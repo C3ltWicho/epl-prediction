@@ -17,8 +17,8 @@ from src.models import EloModel, LogisticRegressionModel, MajorityBaseline, XGBo
 from src.predict import Predictor
 
 START_SEASON = 2015
-END_SEASON = 2024
-VALIDATION_SEASONS = [2021, 2022, 2023, 2024]
+END_SEASON = 2026  # includes the in-progress 2026-27 season, up through the most recent played matchday
+VALIDATION_SEASONS = [2021, 2022, 2023, 2024, 2025, 2026]
 BEST_MODEL_NAME = "XGBoost"
 
 

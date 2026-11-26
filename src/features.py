@@ -158,6 +158,38 @@ def _add_home_away_splits(long_df: pd.DataFrame) -> pd.DataFrame:
     return long_df
 
 
+def _new_table():
+    """Per-team [points, goal difference, goals for]."""
+    return defaultdict(lambda: [0, 0, 0])
+
+
+def _record_result(table, row) -> None:
+    home, away = table[row.HomeTeam], table[row.AwayTeam]
+    if row.Result == 0:
+        home[0] += 3
+    elif row.Result == 1:
+        home[0] += 1
+        away[0] += 1
+    else:
+        away[0] += 3
+    home[1] += row.HomeGoals - row.AwayGoals
+    away[1] += row.AwayGoals - row.HomeGoals
+    home[2] += row.HomeGoals
+    away[2] += row.AwayGoals
+
+
+def _ranks(table) -> dict:
+    """{team: position}. The one ranking rule shared by training and live prediction."""
+    ordered = sorted(table, key=lambda t: (*table[t], t), reverse=True)
+    return {team: i + 1 for i, team in enumerate(ordered)}
+
+
+def season_for_date(match_date) -> int:
+    """Season start year. August onward is a new season (2019-20 ran into July 2020)."""
+    match_date = pd.Timestamp(match_date)
+    return match_date.year if match_date.month >= 8 else match_date.year - 1
+
+
 def _league_positions(df: pd.DataFrame) -> pd.DataFrame:
     """
     For every match, rank each team by season-to-date points AS OF that
@@ -169,42 +201,17 @@ def _league_positions(df: pd.DataFrame) -> pd.DataFrame:
     positions_home = np.empty(len(df))
     positions_away = np.empty(len(df))
 
-    for season, season_df in df.groupby("Season"):
-        season_df = season_df.sort_values("Date")
-        unique_dates = season_df["Date"].unique()
-
-        points = defaultdict(int)
-        goal_diff = defaultdict(int)
-        goals_for = defaultdict(int)
-
-        for d in unique_dates:
-            standings = sorted(
-                points.keys(),
-                key=lambda t: (points[t], goal_diff[t], goals_for[t], t),
-                reverse=True,
-            )
-            rank = {team: i + 1 for i, team in enumerate(standings)}
-            n_teams_seen = len(standings)
-
-            todays_matches = season_df[season_df["Date"] == d]
-            for idx, row in todays_matches.iterrows():
-                positions_home[df.index.get_loc(idx)] = rank.get(row["HomeTeam"], n_teams_seen + 1)
-                positions_away[df.index.get_loc(idx)] = rank.get(row["AwayTeam"], n_teams_seen + 1)
-
-            for _, row in todays_matches.iterrows():
-                h, a, res = row["HomeTeam"], row["AwayTeam"], row["Result"]
-                hg, ag = row["HomeGoals"], row["AwayGoals"]
-                if res == 0:
-                    points[h] += 3
-                elif res == 1:
-                    points[h] += 1
-                    points[a] += 1
-                else:
-                    points[a] += 3
-                goal_diff[h] += hg - ag
-                goal_diff[a] += ag - hg
-                goals_for[h] += hg
-                goals_for[a] += ag
+    for _, season_df in df.groupby("Season"):
+        table = _new_table()
+        for _, day in season_df.sort_values("Date").groupby("Date"):
+            rank = _ranks(table)
+            unranked = len(rank) + 1
+            for row in day.itertuples():
+                i = df.index.get_loc(row.Index)
+                positions_home[i] = rank.get(row.HomeTeam, unranked)
+                positions_away[i] = rank.get(row.AwayTeam, unranked)
+            for row in day.itertuples():
+                _record_result(table, row)
 
     df = df.copy()
     df["HomeLeaguePosition"] = positions_home
@@ -320,26 +327,11 @@ def _team_home_away_split(df_before: pd.DataFrame, team: str, home: bool, n: int
 
 
 def _league_position_asof(df_before: pd.DataFrame, team: str, season) -> int:
-    df_season = df_before[df_before["Season"] == season]
-    if df_season.empty:
-        return len(set(df_before["HomeTeam"]) | set(df_before["AwayTeam"])) or 1
-
-    points, gd = defaultdict(int), defaultdict(int)
-    for row in df_season.itertuples(index=False):
-        if row.Result == 0:
-            points[row.HomeTeam] += 3
-        elif row.Result == 1:
-            points[row.HomeTeam] += 1
-            points[row.AwayTeam] += 1
-        else:
-            points[row.AwayTeam] += 3
-        gd[row.HomeTeam] += row.HomeGoals - row.AwayGoals
-        gd[row.AwayTeam] += row.AwayGoals - row.HomeGoals
-
-    standings = sorted(points.keys(), key=lambda t: (points[t], gd[t]), reverse=True)
-    if team not in standings:
-        return len(standings) + 1
-    return standings.index(team) + 1
+    table = _new_table()
+    for row in df_before[df_before["Season"] == season].itertuples(index=False):
+        _record_result(table, row)
+    rank = _ranks(table)
+    return rank.get(team, len(rank) + 1)
 
 
 def compute_features_for_match(df: pd.DataFrame, elo_ratings: dict, home_team: str, away_team: str,
@@ -355,7 +347,7 @@ def compute_features_for_match(df: pd.DataFrame, elo_ratings: dict, home_team: s
         raise ValueError(f"No historical data before {match_date.date()}")
 
     if season is None:
-        season = df_before["Season"].max()
+        season = season_for_date(match_date)
 
     home_elo = elo_ratings.get(home_team, 1500)
     away_elo = elo_ratings.get(away_team, 1500)

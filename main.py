@@ -19,15 +19,16 @@ import pytest
 from src.backtest import evaluate_model_performance, print_model_comparison_table, walk_forward_backtest
 from src.data_loader import load_epl_data
 from src.data_validator import TEAM_NAME_MAP, canonicalize_team_names, report_data_quality, validate_dataset
-from src.features import FEATURE_COLUMNS, build_feature_table, compute_elo_ratings
+from src.features import FEATURE_COLUMNS, build_feature_table
 from src.models import EloModel, LogisticRegressionModel, MajorityBaseline, XGBoostModel
-from src.predict import Predictor
+from src.predict import DEFAULT_MODEL_PATH, Predictor
 
 START_SEASON = 2015
 END_SEASON = 2026  # includes the in-progress 2026-27 season, up through the most recent played matchday
 VALIDATION_SEASONS = [2021, 2022, 2023, 2024, 2025, 2026]
-BEST_MODEL_NAME = "XGBoost"
-MODEL_PATH = "models/xgboost_v001.pkl"
+# Chosen for the lowest walk-forward log loss. This was picked by looking at the
+# validation seasons, so its score there is slightly optimistic.
+BEST_MODEL_NAME = "LogisticRegression"
 
 
 def run_pipeline(args):
@@ -71,11 +72,10 @@ def run_pipeline(args):
     pathlib.Path("models").mkdir(exist_ok=True)
     best_model = models[BEST_MODEL_NAME]
     best_model.fit(feature_table)
-    joblib.dump(best_model, MODEL_PATH)
+    joblib.dump(best_model, DEFAULT_MODEL_PATH)
 
     print("\nTesting the live prediction API...")
-    _, elo_ratings = compute_elo_ratings(df)
-    predictor = Predictor(MODEL_PATH, history_df=df, elo_ratings=elo_ratings)
+    predictor = Predictor(DEFAULT_MODEL_PATH, history_df=df)
 
     sample_home, sample_away = df.iloc[-1]["HomeTeam"], df.iloc[-1]["AwayTeam"]
     sample_date = df.iloc[-1]["Date"]
@@ -127,8 +127,7 @@ def cmd_predict(args):
 
     match_date = args.date or (date.today() + timedelta(days=1)).isoformat()
 
-    _, elo_ratings = compute_elo_ratings(df)
-    predictor = Predictor(str(model_path), history_df=df, elo_ratings=elo_ratings)
+    predictor = Predictor(str(model_path), history_df=df)
 
     try:
         result = predictor.predict_match(home, away, match_date)
@@ -156,7 +155,8 @@ def build_parser():
     predict_parser.add_argument("--home", required=True, help="Home team name (see `python main.py teams`)")
     predict_parser.add_argument("--away", required=True, help="Away team name (see `python main.py teams`)")
     predict_parser.add_argument("--date", default=None, help="Match date, YYYY-MM-DD (default: tomorrow)")
-    predict_parser.add_argument("--model", default=MODEL_PATH, help=f"Path to a saved model (default: {MODEL_PATH})")
+    predict_parser.add_argument("--model", default=DEFAULT_MODEL_PATH,
+                                help=f"Path to a saved model (default: {DEFAULT_MODEL_PATH})")
     predict_parser.add_argument("--start-season", type=int, default=START_SEASON, dest="start_season")
     predict_parser.add_argument("--end-season", type=int, default=END_SEASON, dest="end_season")
     predict_parser.set_defaults(func=cmd_predict)

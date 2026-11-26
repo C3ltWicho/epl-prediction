@@ -102,6 +102,7 @@
   .factors-title { font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
   .factors ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text); }
   .factors li { margin-bottom: 3px; }
+  .factors-note { font-size: 12px; color: var(--text-muted); margin: 8px 0 0; }
 </style>
 </head>
 <body>
@@ -168,12 +169,14 @@
 
       {% if result.top_factors %}
       <div class="factors">
-        <div class="factors-title">Top contributing factors</div>
+        <div class="factors-title">What moved this prediction</div>
         <ul>
           {% for factor in result.top_factors %}
-            <li>{{ factor }}</li>
+            <li>{{ factor.feature.replace('_', ' ') }}: {{ factor.value }}
+              ({{ 'raises' if factor.effect > 0 else 'lowers' }} the predicted outcome, {{ '%+.2f' % factor.effect }})</li>
           {% endfor %}
         </ul>
+        <p class="factors-note">Compared with an average match, in model score units (not percentage points). Related stats share credit.</p>
       </div>
       {% endif %}
     </div>

@@ -10,19 +10,16 @@ from flask import Flask, render_template, request
 
 from src.data_loader import load_epl_data
 from src.data_validator import TEAM_NAME_MAP, canonicalize_team_names
-from src.features import compute_elo_ratings
-from src.predict import Predictor
+from src.predict import DEFAULT_MODEL_PATH, Predictor
 
 START_SEASON = 2015
 END_SEASON = 2026
-MODEL_PATH = "models/xgboost_v001.pkl"
 
 app = Flask(__name__)
 
 print("Loading EPL history and model (this happens once at startup)...")
 _history_df = canonicalize_team_names(load_epl_data(START_SEASON, END_SEASON))
-_, _elo_ratings = compute_elo_ratings(_history_df)
-_predictor = Predictor(MODEL_PATH, history_df=_history_df, elo_ratings=_elo_ratings)
+_predictor = Predictor(DEFAULT_MODEL_PATH, history_df=_history_df)
 _teams = sorted(set(_history_df["HomeTeam"].unique()) | set(_history_df["AwayTeam"].unique()))
 print(f"Ready — {len(_teams)} teams, history through {_history_df['Date'].max().date()}.")
 

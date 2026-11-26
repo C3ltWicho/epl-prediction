@@ -27,25 +27,36 @@ table, saves the best model, and demos the live prediction API.
 
 ### Make a prediction
 
+Run the pipeline once first; it trains and saves the model.
+
+```bash
+python main.py predict --home Arsenal --away Liverpool --date 2026-09-19
+python main.py teams   # list valid team names
+```
+
+Or start the web UI at http://localhost:5050:
+
+```bash
+python app.py
+```
+
+Or from Python:
+
 ```python
-import pandas as pd
 from src.data_loader import load_epl_data
 from src.data_validator import canonicalize_team_names
-from src.features import compute_elo_ratings
-from src.predict import Predictor
+from src.predict import DEFAULT_MODEL_PATH, Predictor
 
-df = canonicalize_team_names(load_epl_data(2015, 2024))
-_, elo_ratings = compute_elo_ratings(df)
-
-predictor = Predictor("models/xgboost_v001.pkl", history_df=df, elo_ratings=elo_ratings)
-result = predictor.predict_match("Arsenal", "Liverpool", "2024-09-15")
-
-print(f"{result['home_team']} vs {result['away_team']}")
-print(f"Home Win: {result['home_win_prob']:.1%}")
-print(f"Draw:     {result['draw_prob']:.1%}")
-print(f"Away Win: {result['away_win_prob']:.1%}")
-print(f"Prediction: {result['predicted_result']}")
+df = canonicalize_team_names(load_epl_data(2015, 2026))
+predictor = Predictor(DEFAULT_MODEL_PATH, history_df=df)
+result = predictor.predict_match("Arsenal", "Liverpool", "2026-09-19")
+print(result)
 ```
+
+`top_factors` lists the features that moved that particular prediction most,
+compared with an average match. `effect` is in log-odds units (not percentage
+points) toward the predicted result. Many features are correlated, so they
+share credit and can partly cancel each other; treat them as a rough guide.
 
 ## Architecture
 
@@ -75,17 +86,17 @@ one vectorized, leak-free feature table for the whole dataset:
   **`.shift(1)` before every `.rolling()`/`.cumsum()`** — so a match's own
   result can never appear in its own features, by construction, not by
   discipline.
-- **Elo ratings** are computed once, chronologically, over the full dataset;
-  each match stores the rating each team carried **into** that match (not
-  after it).
+- **Elo ratings** are computed in date order; each match stores the rating each
+  team carried **into** that match. For live predictions, `Predictor` rebuilds
+  them from matches before the requested date.
 - **League position** is computed per season from a running standings table
   built up date-by-date, using only matches on strictly earlier dates.
 
 A second code path, `compute_features_for_match(...)`, computes the same
 feature set on demand for a single hypothetical match (used by the live
-`Predictor` API) by filtering history to `Date < match_date` directly — simple
-and correct is fine here since it's only ever called once per prediction, not
-once per backtested match.
+`Predictor` API) by filtering history to `Date < match_date` directly. It's only
+called once per prediction, so clarity matters more than speed. A test checks
+that both paths give the same values.
 
 ### Models ([`src/models.py`](src/models.py))
 
@@ -99,14 +110,15 @@ needs team names, the others need engineered features):
   in-season updates during validation).
 - **Logistic Regression**: multinomial, over the full engineered feature set,
   with standardized inputs.
-- **XGBoost**: gradient-boosted trees over the same feature set (best
-  performer).
+- **XGBoost**: gradient-boosted trees over the same feature set (untuned).
+
+Logistic Regression is the saved default because it has the lowest log loss.
 
 ### Evaluation ([`src/backtest.py`](src/backtest.py))
 
 - **Walk-forward backtesting**: train on all seasons strictly before the
-  validation season, evaluate on that season, repeat for 2021, 2022, 2023,
-  2024. Never a random train/test split.
+  validation season, evaluate on that season, repeat for each season from 2021
+  to 2026 (2026-27 is partial). Never a random train/test split.
 - **Metrics**: accuracy, log loss, Brier score, macro F1, plus per-class
   (home/draw/away) accuracy from the confusion matrix.
 
@@ -114,33 +126,36 @@ needs team names, the others need engineered features):
 
 Run against a small synthetic dataset for speed and determinism:
 
-- A team's own match never appears in its own rolling-form window.
-- Season-to-date stats are 0 for a team's first match of a season.
-- Elo ratings attached to a match are the pre-match rating, not post-match.
-- The on-demand feature function only ever sees rows before `match_date`.
-- Cold-start (first match ever, first match of a season, brand-new/promoted
-  team with no history) doesn't crash and degrades to sane defaults.
-- Team-name canonicalization is idempotent and consistent.
-- Backtest probabilities sum to 1.
+- Changing results on or after a date changes nothing predicted for that date,
+  in both the training features and the live `Predictor`.
+- Training and live feature code agree on every match with prior history.
+- A season's opening day starts from zero season stats.
+- Elo ratings start at 1500 and are pre-match.
+- All four models' probabilities sum to 1.
+- Per-match explanations add up to the model's actual output.
+- Cold starts (no history, or a team never seen) are handled.
+- Team-name variants map to one canonical name.
 
 ## Results
 
-Walk-forward backtest, 2015–2024 EPL data (2021–2024 as validation seasons,
-1,520 validation matches per model):
+Walk-forward backtest, validation seasons 2021-22 through 2026-27 (data through
+2026-09-14), 1,940 matches per model:
 
 | Model | Accuracy | Log Loss | Brier | Macro F1 |
 | ----- | -------- | -------- | ----- | -------- |
-| Majority | 0.445 | 19.99 | 1.109 | 0.205 |
-| Elo | 0.526 | 0.989 | 0.589 | 0.385 |
-| Logistic Regression | 0.543 | 0.974 | 0.579 | 0.406 |
-| XGBoost | 0.541 | 1.001 | 0.592 | 0.420 |
+| Majority | 0.439 | 20.21 | 1.122 | 0.203 |
+| Elo | 0.510 | 1.002 | 0.598 | 0.376 |
+| **Logistic Regression** | 0.525 | **0.990** | 0.591 | 0.393 |
+| XGBoost | 0.522 | 1.013 | 0.601 | 0.402 |
 
-All three real models comfortably beat the majority-class baseline on every
-metric. Logistic Regression and XGBoost are close on accuracy/log-loss;
-XGBoost's higher macro F1 comes from better draw/away-class balance. Exact
-numbers will shift slightly run-to-run only if the underlying data changes
-(models are seeded for reproducibility). Full per-match predictions are in
-`validation_results.csv` after running `main.py`.
+All three real models beat the majority-class baseline. The gaps between them
+are small. Logistic Regression has the best probability scores (log loss and
+Brier); XGBoost has a higher macro F1. Because the default was chosen by looking
+at these seasons, its score here is slightly optimistic. The Majority log loss is
+large because it assigns 100% to one outcome. The Elo baseline is also
+handicapped: its ratings are frozen during each validation season.
+
+Full per-match predictions are in `validation_results.csv`.
 
 ## Features
 
@@ -167,8 +182,8 @@ numbers will shift slightly run-to-run only if the underlying data changes
   downloaded but unused — out of scope for this build).
 - **No probability calibration, ensembling, or Poisson goal models** — out of
   scope for this build (see Next Steps).
-- **Cold start**: a season's opening matches fall back to the previous
-  season's Elo rating and show 0 season-to-date stats; a team with zero
+- **Cold start**: a season's opening matches carry over Elo ratings and recent
+  form but show 0 season-to-date stats; a team with zero
   history (e.g. newly promoted, or not yet in the loaded date range) falls
   back to a neutral default rating (1500) and zeroed stats rather than
   crashing.
@@ -187,7 +202,7 @@ numbers will shift slightly run-to-run only if the underlying data changes
 pytest tests/ -v
 ```
 
-- `tests/test_leakage.py`: verifies no future data ever reaches a feature.
+- `tests/test_leakage.py`: leakage, train/live consistency, and model output checks.
 - `tests/test_features.py`: cold-start and unseen-team edge cases.
 
 ## References

@@ -94,6 +94,17 @@ class LogisticRegressionModel:
         X_scaled = self.scaler.transform(X)
         return self.model.predict_proba(X_scaled)
 
+    def explain(self, df_query, class_index: int) -> dict:
+        """
+        Each feature's contribution to one class's log-odds score for the first
+        row of df_query, relative to an average training match. Positive values
+        favour that class. Correlated features (e.g. the Elo columns) share
+        credit, so read individual values with care.
+        """
+        x_scaled = self.scaler.transform(df_query[self.feature_cols].fillna(0))[0]
+        column = list(self.model.classes_).index(class_index)
+        return dict(zip(self.feature_cols, (self.model.coef_[column] * x_scaled).tolist()))
+
 
 class XGBoostModel:
     """Gradient-boosted trees over the engineered feature set."""
@@ -119,6 +130,3 @@ class XGBoostModel:
     def predict_proba(self, df_query):
         X = df_query[self.feature_cols].fillna(0)
         return self.model.predict_proba(X)
-
-    def feature_importance(self):
-        return dict(zip(self.feature_cols, self.model.feature_importances_))
